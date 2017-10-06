@@ -311,7 +311,7 @@ private:
     if(use_imu_sync_timestamps_) {
       ROS_INFO("Using Imu Synchronized Timestamps");
       full_imu_message_pub_ = pnh.advertise<sensor_msgs::Imu>("imu", 1);
-      imu_trigger_sub_ = pnh.subscribe("imu_trigger", 1, &PointGreyCameraNodelet::imuDataCb, this);
+      imu_trigger_sub_ = pnh.subscribe("imu_trigger", 1, &PointGreyCameraNodelet::imuDataCb, this, ros::TransportHints().tcpNoDelay());
     }
 
     // Set up diagnostics
