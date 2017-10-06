@@ -42,6 +42,9 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 #include <wfov_camera_msgs/WFOVImage.h>
 #include <image_exposure_msgs/ExposureSequence.h> // Message type for configuring gain and white balance.
 
+#include <camera_imu_sync_apm/ImuTrigger.h> // Message type for simplified Imu message with camera trigger
+#include <sensor_msgs/Imu.h>
+
 #include <diagnostic_updater/diagnostic_updater.h> // Headers for publishing diagnostic messages.
 #include <diagnostic_updater/publisher.h>
 
@@ -204,6 +207,22 @@ private:
     }
   }
 
+  void imuDataCb(const camera_imu_sync_apm::ImuTrigger &imu_message) {
+    sensor_msgs::Imu full_imu_message;
+    full_imu_message.angular_velocity = imu_message.gyro;
+    full_imu_message.linear_acceleration = imu_message.accel;
+    full_imu_message.header = imu_message.header;
+    // Update trigger
+    imu_mutex_.lock();
+    if(imu_message.camera_trigger) {
+      received_camera_trigger_ = true;
+      camera_trigger_time_ = imu_message.header.stamp;
+    }
+    imu_mutex_.unlock();
+    // Publish full imu message
+    full_imu_message_pub_.publish(full_imu_message);
+  }
+
   /*!
   * \brief Serves as a psuedo constructor for nodelets.
   *
@@ -286,6 +305,14 @@ private:
     it_.reset(new image_transport::ImageTransport(nh));
     image_transport::SubscriberStatusCallback cb = boost::bind(&PointGreyCameraNodelet::connectCb, this);
     it_pub_ = it_->advertiseCamera("image_raw", 5, cb, cb);
+
+    // Setup IMU
+    pnh.param<bool>("use_imu_sync_timestamps", use_imu_sync_timestamps_, false);
+    if(use_imu_sync_timestamps_) {
+      ROS_INFO("Using Imu Synchronized Timestamps");
+      full_imu_message_pub_ = pnh.advertise<sensor_msgs::Imu>("imu", 1);
+      imu_trigger_sub_ = pnh.subscribe("imu_trigger", 1, &PointGreyCameraNodelet::imuDataCb, this);
+    }
 
     // Set up diagnostics
     updater_.setHardwareID("pointgrey_camera " + cinfo_name.str());
@@ -490,9 +517,28 @@ private:
 
             wfov_image->temperature = pg_.getCameraTemperature();
 
-            ros::Time time = ros::Time::now();
-            wfov_image->header.stamp = time;
-            wfov_image->image.header.stamp = time;
+            // Wait for camera trigger to receive
+            ros::Time camera_trigger_time = ros::Time::now();
+            if(use_imu_sync_timestamps_) {
+              bool received_camera_trigger = false;
+              ros::Time current_time = ros::Time::now();
+              while(!received_camera_trigger && (ros::Time::now() - current_time).toSec() < 0.02) {
+                imu_mutex_.lock();
+                if(received_camera_trigger_) {
+                  received_camera_trigger = true;
+                  received_camera_trigger_ = false;
+                  camera_trigger_time = camera_trigger_time_;
+                }
+                imu_mutex_.unlock();
+                ros::Duration(0.001).sleep();
+              }
+              if(!received_camera_trigger) {
+                NODELET_WARN("No trigger received within timeout! Skipping image");
+                break;
+              }
+              wfov_image->header.stamp = camera_trigger_time;
+            }
+            wfov_image->image.header.stamp = camera_trigger_time;
 
             // Set the CameraInfo message
             ci_.reset(new sensor_msgs::CameraInfo(cinfo_->getCameraInfo()));
@@ -568,6 +614,12 @@ private:
   image_transport::CameraPublisher it_pub_; ///< CameraInfoManager ROS publisher
   boost::shared_ptr<diagnostic_updater::DiagnosedPublisher<wfov_camera_msgs::WFOVImage> > pub_; ///< Diagnosed publisher, has to be a pointer because of constructor requirements
   ros::Subscriber sub_; ///< Subscriber for gain and white balance changes.
+  ros::Subscriber imu_trigger_sub_;///< Subscribe to IMU messages
+  ros::Publisher full_imu_message_pub_;///< Subscribe to IMU messages
+  ros::Time camera_trigger_time_;///< Time when camera is triggered
+  bool received_camera_trigger_;///< Flag to specify that camera trigger has been received
+  boost::mutex imu_mutex_;///< Mutex to synchronize access to camera trigger time
+  bool use_imu_sync_timestamps_;///< Flag to specify whether to wait for IMU sync timestamps or not
 
   boost::mutex connect_mutex_;
 

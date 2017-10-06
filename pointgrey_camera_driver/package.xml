@@ -26,6 +26,7 @@
   <depend>image_transport</depend>
   <depend>dynamic_reconfigure</depend>
   <depend>diagnostic_updater</depend>
+  <depend>camera_imu_sync_apm</depend>
 
   <!-- Dependencies of libflycapture -->
   <depend>libusb-1.0-dev</depend>
